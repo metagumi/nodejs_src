@@ -1,0 +1,146 @@
+The Node.js program we made in the last section exposed a flaw in our client code; namely, that it doesn’t buffer its inputs. Any message that arrives as multiple data events will crash it.
+
+So really the client program has two jobs to do. One is to buffer incoming data into messages. The other is to handle each message when it arrives.
+
+Rather than cramming both of these jobs into one Node.js program, the right thing to do is to turn at least one of them into a Node.js module. We’ll create a module that handles the input-buffering piece so that the main program can reliably get full messages. Along the way, we’ll need to talk about custom modules and extending core classes in Node.
+
+Extending EventEmitter
+To relieve the client program from the danger of split JSON messages, we’ll implement an LDJ buffering client module. Then we’ll incorporate it into the network-watcher client.
+
+Inheritance in Node
+First let’s have a look at how Node.js does inheritance. The following code sets up LDJClient to inherit from EventEmitter.
+
+networking/lib/ldj-client.js
+​ 	​const​ EventEmitter = require(​'events'​).EventEmitter;
+​ 	​class​ LDJClient ​extends​ EventEmitter {
+​ 	  ​constructor​(stream) {
+​ 	    ​super​();
+​ 	  }
+​ 	}
+LDJClient is a class, which means other code should call new LDJClient(stream) to get an instance. The stream parameter is an object that emits data events, such as a Socket connection.
+
+Inside the constructor function, we first call super to invoke EventEmitter’s own constructor function. Whenever you’re implementing a class that extends another class, you should start with calling super, with the appropriate constructor arguments for it.
+
+You might be interested to know that under the hood, JavaScript uses prototypal inheritance to establish the relationship between LDJClient and EventEmitter. Prototypal inheritance is powerful, and can be used for more than just classes, but this usage is increasingly rare. Code to use ‘LDJClient‘ might look like this:
+
+​ 	​const​ client = ​new​ LDJClient(networkStream);
+​ 	client.on(​'message'​, message => {
+​ 	  ​// Take action for this message.​
+​ 	});
+The class hierarchy is now in place, but we haven’t implemented anything to emit message events. Let’s look at this next, and talk about buffering data events in Node.
+
+Buffering Data Events
+It’s time to use the stream parameter in the LDJClient to retrieve and buffer input. The goal is to take the incoming raw data from the stream and convert it into message events containing the parsed message objects.
+
+Take a look at the following updated constructor. It appends incoming data chunks to a running buffer string and scans for line endings (which should be JSON message boundaries).
+
+networking/lib/ldj-client.js
+​ 	​constructor​(stream) {
+​ 	  ​super​();
+​ 	  ​let​ buffer = ​''​;
+​ 	  stream.on(​'data'​, data => {
+​ 	    buffer += data;
+​ 	    ​let​ boundary = buffer.indexOf(​'​​\​​n'​);
+​ 	    ​while​ (boundary !== -1) {
+​ 	      ​const​ input = buffer.substring(0, boundary);
+​ 	      buffer = buffer.substring(boundary + 1);
+​ 	      ​this​.emit(​'message'​, JSON.parse(input));
+​ 	      boundary = buffer.indexOf(​'​​\​​n'​);
+​ 	    }
+​ 	  });
+​ 	}
+Prototypal Inheritance
+Consider the LDJClient class we just made. Prior to the availability of the class, constructor, and super keywords, we would have written that code as follows:
+
+​ 	​const​ EventEmitter = require(​'events'​).EventEmitter;
+​ 	​const​ util = require(​'util'​);
+​ 	
+​ 	​function​ LDJClient(stream) {
+​ 	  EventEmitter.call(​this​);
+​ 	}
+​ 	
+​ 	util.inherits(LDJClient, EventEmitter);
+LDJClient is a constructor function. It’s the same as if you’d used the class and constructor keywords. Instead of super, we invoke the EventEmitter constructor function on this.
+
+Finally, we use util.inherits to make LDJClient’s prototypal parent object the EventEmitter prototype. If this sounds cryptic to you, don’t worry. It means that if you look for a property on an LDJClient and it’s not there, the EventEmitter is the next place to look.
+
+Consider when we make an LDJClient instance called client and call client.on. Even though the client object itself and the LDJClient prototype both lack an on method, the JavasScript engine will find and use the on method of EventEmitter.
+
+In the same fashion, if we call client.toString, the JavaScript engine will find and use the native implementation on the EventEmitter’s prototypal parent, Object.
+
+In general, you shouldn’t have to deal with this level of abstraction. Library authors sometimes take advantage of these features to do clever things, but by far the most common use of prototypal inheritance is to set up class hierarchies.
+
+We start out by calling super, just like before, and then set up a string variable called buffer to capture incoming data. Next, we use stream.on to handle data events.
+
+The code inside the data event handler is dense, but it’s not fancy. We append raw data to the end of the buffer and then look for completed messages from the front. Each message string is sent through JSON.parse and finally emitted by the LDJClient as a message event via this.emit.
+
+At this point, the problem we started with (handling split messages) is effectively solved. Whether ten messages come in on a single data event or only half of one does, they’ll all precipitate message events on the LDJClient instance.
+
+Next we need to put this class into a Node.js module so our upstream client can use it.
+
+Exporting Functionality in a Module
+Let’s pull together the previous code samples and expose LDJClient as a module. Start by creating a directory called lib. You could name it something else, but there is a strong convention in the Node.js community to put supporting code in the lib directory.
+
+Next, open your text editor and insert the following:
+
+networking/lib/ldj-client.js
+​ 	​'use strict'​;
+​ 	​const​ EventEmitter = require(​'events'​).EventEmitter;
+​ 	​class​ LDJClient ​extends​ EventEmitter {
+​ 	  ​constructor​(stream) {
+​ 	    ​super​();
+​ 	    ​let​ buffer = ​''​;
+​ 	    stream.on(​'data'​, data => {
+​ 	      buffer += data;
+​ 	      ​let​ boundary = buffer.indexOf(​'​​\​​n'​);
+​ 	      ​while​ (boundary !== -1) {
+​ 	        ​const​ input = buffer.substring(0, boundary);
+​ 	        buffer = buffer.substring(boundary + 1);
+​ 	        ​this​.emit(​'message'​, JSON.parse(input));
+​ 	        boundary = buffer.indexOf(​'​​\​​n'​);
+​ 	      }
+​ 	    });
+​ 	  }
+​ 	
+​ 	  ​static​ connect(stream) {
+​ 	    ​return​ ​new​ LDJClient(stream);
+​ 	  }
+​ 	}
+​ 	
+​ 	module.exports = LDJClient;
+Save the file as lib/ldj-client.js. The code for this module is the combination of previous examples plus a static method—the new module.exports section at the end.
+
+Inside the class definition, after the constructor, we’re adding a static method called connect. A static method is attached to the LDJClient class itself rather than applied to individual instances. The connect method is merely a convenience for consumers of the library so that they don’t have to use the new operator to create an instance of LDJClient.
+
+In a Node.js module, the module.exports object is the bridge between the module code and the outside world. Any properties you set on exports will be available to upstream code that pulls in the module. In our case, we’re exporting the LDJClient class itself.
+
+Code to use the LDJ module will look something like this:
+
+​ 	​const​ LDJClient = require(​'./lib/ldj-client.js'​);
+​ 	​const​ client = ​new​ LDJClient(networkStream);
+Or, using the connect method, it could look like this:
+
+​ 	​const​ client = require(​'./lib/ldj-client.js'​).connect(networkStream);
+Notice that in both cases, the require function takes an actual path here, rather than the shorthand module names we’ve seen previously, like fs, net, and util. When a path is provided to require, Node.js will attempt to resolve the path relative to the current file.
+
+Our module is done! Now let’s augment the network-watching client to use the module, to bring it all together.
+
+Importing a Custom Node.js Module
+It’s time to make use of our custom module. Let’s modify the client to use it rather than reading directly from the TCP stream.
+
+Open a text editor and enter the following:
+
+networking/net-watcher-ldj-client.js
+​ 	​'use strict'​;
+​ 	​const​ netClient = require(​'net'​).connect({port: 60300});
+​ 	​const​ ldjClient = require(​'./lib/ldj-client.js'​).connect(netClient);
+​ 	
+​ 	ldjClient.on(​'message'​, message => {
+​ 	  ​if​ (message.type === ​'watching'​) {
+​ 	    console.log(​`Now watching: ​${message.file}​`​);
+​ 	  } ​else​ ​if​ (message.type === ​'changed'​) {
+​ 	    console.log(​`File changed: ​${​new​ Date(message.timestamp)}​`​);
+​ 	  } ​else​ {
+​ 	    ​throw​ Error(​`Unrecognized message type: ​${message.type}​`​);
+​ 	  }
+​ 	});
