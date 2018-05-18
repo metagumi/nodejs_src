@@ -4,10 +4,11 @@ const ldjClient = require('./lib/ldj-client.js').connect(netClient);
 
 ldjClient.on('message', message => {
     if (message.type === 'watching') {
-        console.log('Now watching: ${message.file}');
+        console.log("Now watching: " + message.file);
     } else if (message.type === 'changed') {
-        console.log('File changed: ${new Date(message.timestamp)}');
+        let date = new Date(message.timestamp);
+        console.log("File changed: " + date);
     } else {
-        throw Error('Unrecognized message type: ${message.type}');
+        throw Error("Unrecognized message type: " + message.type);
     }
 });
