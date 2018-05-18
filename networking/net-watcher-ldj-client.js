@@ -1,16 +1,13 @@
 "use strict"
-const
-    net = require('net'),
-    ldj = require('./ldj.js'),
-    netClient = net.connect({port:5432}),
-    ldjClient = ldj.connect(netClient);
+const netClient  = require('net').connect({port: 60300});
+const ldjClient = require('./lib/ldj-client.js').connect(netClient);
 
-ldjClient.on('message', function(message) {
+ldjClient.on('message', message => {
     if (message.type === 'watching') {
-        console.log("Now watching: " + message.file);
+        console.log('Now watching: ${message.file}');
     } else if (message.type === 'changed') {
-        console.log("File '" + message.file + "' changed at " + new Date(message.timestamp));
+        console.log('File changed: ${new Date(message.timestamp)}');
     } else {
-        throw Error("Unrecognized message type: " + message.type);
+        throw Error('Unrecognized message type: ${message.type}');
     }
 });
